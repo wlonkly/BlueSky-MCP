@@ -239,8 +239,8 @@ async def handle_call_tool(
             limit = arguments.get("limit", 50)
             cursor = arguments.get("cursor")
             response = await asyncio.to_thread(
-                bluesky.client.app.bsky.feed.get_likes,
-                {'uri': IDENTIFIER, 'limit': limit, 'cursor': cursor}
+                bluesky.client.app.bsky.feed.get_actor_likes,
+                {'actor': IDENTIFIER, 'limit': limit, 'cursor': cursor}
             )
 
         elif name == "bluesky_get_personal_feed":
