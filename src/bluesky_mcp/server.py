@@ -2,11 +2,12 @@ from typing import Any
 import asyncio
 import json
 import os
-from atproto import Client
+from atproto import Client, models
 from mcp.server.models import InitializationOptions
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 import mcp.server.stdio
+from datetime import datetime, timezone
 
 API_KEY = os.getenv('BLUESKY_APP_PASSWORD')
 IDENTIFIER = os.getenv('BLUESKY_IDENTIFIER')
@@ -180,6 +181,125 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": ["query"],
             },
         ),
+        types.Tool(
+            name="bluesky_get_lists",
+            description="Get lists created by a specified user (defaults to current user)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "actor": {
+                        "type": "string",
+                        "description": "User handle or DID (defaults to current user)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lists to return (default 50, max 100)",
+                        "default": 50,
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor for next page of results",
+                    },
+                },
+            },
+        ),
+        types.Tool(
+            name="bluesky_get_list",
+            description="Get a specific list with its members",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "list": {
+                        "type": "string",
+                        "description": "List URI (at://did:collection/rkey)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of members to return (default 50, max 100)",
+                        "default": 50,
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor for next page of results",
+                    },
+                },
+                "required": ["list"],
+            },
+        ),
+        types.Tool(
+            name="bluesky_create_list",
+            description="Create a new list for the current user",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The list's title",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Explanatory text about the list",
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "description": "List purpose: 'curatelist' for feeds, 'modlist' for muting/blocking",
+                        "enum": ["curatelist", "modlist"],
+                        "default": "curatelist",
+                    },
+                },
+                "required": ["name", "description"],
+            },
+        ),
+        types.Tool(
+            name="bluesky_delete_list",
+            description="Delete a list owned by the current user",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "list_uri": {
+                        "type": "string",
+                        "description": "List URI to delete (at://did:collection/rkey)",
+                    },
+                },
+                "required": ["list_uri"],
+            },
+        ),
+        types.Tool(
+            name="bluesky_add_user_to_list",
+            description="Add a user to a list owned by the current user",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "list_uri": {
+                        "type": "string",
+                        "description": "List URI (at://did:collection/rkey)",
+                    },
+                    "did": {
+                        "type": "string",
+                        "description": "User's DID to add to the list",
+                    },
+                },
+                "required": ["list_uri", "did"],
+            },
+        ),
+        types.Tool(
+            name="bluesky_remove_user_from_list",
+            description="Remove a user from a list owned by the current user",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "list_uri": {
+                        "type": "string",
+                        "description": "List URI (at://did:collection/rkey)",
+                    },
+                    "did": {
+                        "type": "string",
+                        "description": "User's DID to remove from the list",
+                    },
+                },
+                "required": ["list_uri", "did"],
+            },
+        ),
     ]
 
 @server.call_tool()
@@ -261,6 +381,140 @@ async def handle_call_tool(
                 bluesky.client.app.bsky.actor.search_actors,
                 {'term': query, 'limit': limit, 'cursor': cursor}
             )
+
+        elif name == "bluesky_get_lists":
+            actor = arguments.get("actor", bluesky.client.me.did)
+            limit = arguments.get("limit", 50)
+            cursor = arguments.get("cursor")
+            response = await asyncio.to_thread(
+                bluesky.client.app.bsky.graph.get_lists,
+                {'actor': actor, 'limit': limit, 'cursor': cursor}
+            )
+
+        elif name == "bluesky_get_list":
+            list_uri = arguments.get("list")
+            if not list_uri:
+                return [types.TextContent(type="text", text="Missing required argument: list")]
+            limit = arguments.get("limit", 50)
+            cursor = arguments.get("cursor")
+            response = await asyncio.to_thread(
+                bluesky.client.app.bsky.graph.get_list,
+                {'list': list_uri, 'limit': limit, 'cursor': cursor}
+            )
+
+        elif name == "bluesky_create_list":
+            name = arguments.get("name")
+            description = arguments.get("description")
+            if not name or not description:
+                return [types.TextContent(type="text", text="Missing required arguments: name, description")]
+            purpose = arguments.get("purpose", "curatelist")
+
+            purpose_map = {
+                "curatelist": "app.bsky.graph.defs#curatelist",
+                "modlist": "app.bsky.graph.defs#modlist",
+            }
+
+            response = await asyncio.to_thread(
+                bluesky.client.com.atproto.repo.create_record,
+                models.ComAtprotoRepoCreateRecord.Data(
+                    repo=bluesky.client.me.did,
+                    collection=models.ids.AppBskyGraphList,
+                    record=models.AppBskyGraphList.Record(
+                        name=name,
+                        description=description,
+                        purpose=purpose_map[purpose],
+                        created_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    ),
+                )
+            )
+
+        elif name == "bluesky_delete_list":
+            list_uri = arguments.get("list_uri")
+            if not list_uri:
+                return [types.TextContent(type="text", text="Missing required argument: list_uri")]
+
+            # Parse the list URI to extract repo, collection, and rkey
+            # Format: at://did:plc:xxx/app.bsky.graph.list/yyy
+            parts = list_uri.split('/')
+            if len(parts) < 5 or parts[0] != 'at:':
+                return [types.TextContent(type="text", text="Invalid list_uri format. Expected: at://did/collection/rkey")]
+
+            repo = parts[2]
+            collection = parts[3]
+            rkey = parts[4]
+
+            await asyncio.to_thread(
+                bluesky.client.com.atproto.repo.delete_record,
+                models.ComAtprotoRepoDeleteRecord.Data(
+                    repo=repo,
+                    collection=collection,
+                    rkey=rkey,
+                )
+            )
+            return [types.TextContent(type="text", text=json.dumps({"success": True, "message": f"Deleted list: {list_uri}"}, indent=2))]
+
+        elif name == "bluesky_add_user_to_list":
+            list_uri = arguments.get("list_uri")
+            did = arguments.get("did")
+            if not list_uri or not did:
+                return [types.TextContent(type="text", text="Missing required arguments: list_uri, did")]
+
+            response = await asyncio.to_thread(
+                bluesky.client.com.atproto.repo.create_record,
+                models.ComAtprotoRepoCreateRecord.Data(
+                    repo=bluesky.client.me.did,
+                    collection=models.ids.AppBskyGraphListitem,
+                    record=models.AppBskyGraphListitem.Record(
+                        subject=did,
+                        list=list_uri,
+                        created_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    ),
+                )
+            )
+
+        elif name == "bluesky_remove_user_from_list":
+            list_uri = arguments.get("list_uri")
+            did = arguments.get("did")
+            if not list_uri or not did:
+                return [types.TextContent(type="text", text="Missing required arguments: list_uri, did")]
+
+            # First, find the listitem record for this user in the list
+            response = await asyncio.to_thread(
+                bluesky.client.app.bsky.graph.get_list,
+                {'list': list_uri, 'limit': 100}
+            )
+
+            if not hasattr(response, 'items') or not response.items:
+                return [types.TextContent(type="text", text="No items found in list")]
+
+            # Find the item with matching subject (DID)
+            target_uri = None
+            for item in response.items:
+                if item.subject.did == did:
+                    target_uri = item.uri
+                    break
+
+            if not target_uri:
+                return [types.TextContent(type="text", text=f"User {did} not found in list")]
+
+            # Parse the item URI to extract repo, collection, and rkey
+            parts = target_uri.split('/')
+            if len(parts) < 5 or parts[0] != 'at:':
+                return [types.TextContent(type="text", text="Invalid item URI format")]
+
+            repo = parts[2]
+            collection = parts[3]
+            rkey = parts[4]
+
+            await asyncio.to_thread(
+                bluesky.client.com.atproto.repo.delete_record,
+                models.ComAtprotoRepoDeleteRecord.Data(
+                    repo=repo,
+                    collection=collection,
+                    rkey=rkey,
+                )
+            )
+            return [types.TextContent(type="text", text=json.dumps({"success": True, "message": f"Removed user {did} from list {list_uri}"}, indent=2))]
 
         else:
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
