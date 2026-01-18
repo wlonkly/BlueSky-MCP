@@ -403,9 +403,9 @@ async def handle_call_tool(
             )
 
         elif name == "bluesky_create_list":
-            name = arguments.get("name")
+            list_name = arguments.get("name")
             description = arguments.get("description")
-            if not name or not description:
+            if not list_name or not description:
                 return [types.TextContent(type="text", text="Missing required arguments: name, description")]
             purpose = arguments.get("purpose", "curatelist")
 
@@ -420,13 +420,14 @@ async def handle_call_tool(
                     repo=bluesky.client.me.did,
                     collection=models.ids.AppBskyGraphList,
                     record=models.AppBskyGraphList.Record(
-                        name=name,
+                        name=list_name,
                         description=description,
                         purpose=purpose_map[purpose],
                         created_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                     ),
                 )
             )
+            return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
 
         elif name == "bluesky_delete_list":
             list_uri = arguments.get("list_uri")
@@ -471,6 +472,7 @@ async def handle_call_tool(
                     ),
                 )
             )
+            return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
 
         elif name == "bluesky_remove_user_from_list":
             list_uri = arguments.get("list_uri")
@@ -479,20 +481,31 @@ async def handle_call_tool(
                 return [types.TextContent(type="text", text="Missing required arguments: list_uri, did")]
 
             # First, find the listitem record for this user in the list
-            response = await asyncio.to_thread(
-                bluesky.client.app.bsky.graph.get_list,
-                {'list': list_uri, 'limit': 100}
-            )
-
-            if not hasattr(response, 'items') or not response.items:
-                return [types.TextContent(type="text", text="No items found in list")]
-
-            # Find the item with matching subject (DID)
+            # Use pagination to handle lists with more than 100 items
+            cursor = None
             target_uri = None
-            for item in response.items:
-                if item.subject.did == did:
-                    target_uri = item.uri
+
+            while target_uri is None and cursor is not False:
+                params = {'list': list_uri, 'limit': 100}
+                if cursor:
+                    params['cursor'] = cursor
+
+                response = await asyncio.to_thread(
+                    bluesky.client.app.bsky.graph.get_list,
+                    params
+                )
+
+                if not hasattr(response, 'items') or not response.items:
                     break
+
+                # Find the item with matching subject (DID)
+                for item in response.items:
+                    if item.subject.did == did:
+                        target_uri = item.uri
+                        break
+
+                # Continue pagination if not found and there's a cursor
+                cursor = getattr(response, 'cursor', False) if not target_uri else False
 
             if not target_uri:
                 return [types.TextContent(type="text", text=f"User {did} not found in list")]
